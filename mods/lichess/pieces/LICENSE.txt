@@ -1,0 +1,5 @@
+Chess pieces: "cburnett" set by Colin M.L. Burnett, as shipped by Lichess
+(https://github.com/lichess-org/lila/tree/master/public/piece/cburnett).
+License: CC BY-SA 3.0 (https://creativecommons.org/licenses/by-sa/3.0/).
+
+chess.js (../chess.js): v1.4.0 by Jeff Hlywa, BSD-2-Clause, https://github.com/jhlywa/chess.js

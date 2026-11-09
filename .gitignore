@@ -1,0 +1,3 @@
+mods/*/jsconfig.json
+mods/*/*.d.ts
+.DS_Store
