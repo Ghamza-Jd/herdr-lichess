@@ -28,8 +28,10 @@ const GRID = [
 const SEEK_LIMIT_MS = 600000; // exec's maximum; the seek is cancelled after it
 // A real-time seek lives as long as its HTTP connection, and fetch can't be aborted, so the
 // seek runs in curl: killing it cancels the seek. $1 pid file, $2 auth header file, $3 url, $4 form.
+// curl reads the auth file when it starts, so the file goes after a second.
 const SEEK_SCRIPT = 'chmod 600 "$2"; curl -sS -N -X POST -H @"$2" -H "User-Agent: herdr-lichess-mod" '
-  + `--data "$4" -w '\\n%{http_code}' "$3" & echo $! > "$1"; wait $!; rc=$?; rm -f "$1" "$2"; exit $rc`;
+  + `--data "$4" -w '\\n%{http_code}' "$3" & pid=$!; echo $pid > "$1"; sleep 1; rm -f "$2"; `
+  + 'wait $pid; rc=$?; rm -f "$1"; exit $rc';
 // Your game's Board API stream (draw/takeback offers, exact moves) is endless ndjson, which
 // fetch can't read as it arrives: curl appends it to a file the heartbeat reads. curl runs
 // in the background and outlives exec; the auth file goes once curl has read it.
@@ -65,6 +67,18 @@ function recentFrom(ex, me) {
 }
 
 const sleep = (cx, ms) => new Promise((resolve) => cx.timer.after(ms, () => resolve()));
+
+// The token reaches curl in a header file: exec has no stdin or env, and an argument would
+// show in `ps`. fs.writeFile can't set a mode, so the folder is made private (700) first;
+// the scripts chmod the file to 600 and delete it once curl has read it.
+async function writeAuthFile(name, token) {
+  const dir = `${appHome()}/data/lichess`;
+  const r = await exec("sh", ["-c", 'umask 077; mkdir -p "$1" && chmod 700 "$1"', "sh", dir]);
+  if (r.code !== 0) throw new Error(`Couldn't make ${dir} private: ${(r.stderr || r.stdout).trim()}`);
+  const path = `${dir}/${name}`;
+  await fs.writeFile(path, `Authorization: Bearer ${token}\n`);
+  return path;
+}
 const standardOnly = (r) => (r?.nowPlaying ?? []).filter((g) => (g.variant?.key ?? "standard") === "standard");
 
 // The path from the layout root to this mod's block, or null.
@@ -165,10 +179,9 @@ export default class Lichess extends View {
     const st = this.stream = { gameId, file: `${dir}/stream-${gameId}.ndjson`, pid: null, offset: 0, reading: false, stopped: false };
     const token = this.play.token;
     cx.spawn(async (cx) => {
+      let auth = null;
       try {
-        await fs.mkdir(dir, { recursive: true });
-        const auth = `${dir}/stream-${gameId}.auth`;
-        await fs.writeFile(auth, `Authorization: Bearer ${token}\n`);
+        auth = await writeAuthFile(`stream-${gameId}.auth`, token);
         const r = await exec("sh", ["-c", STREAM_SCRIPT, "sh", st.file, auth, `https://lichess.org/api/board/game/stream/${gameId}`]);
         const pid = r.stdout.trim();
         if (st.stopped) { if (pid) exec("kill", [pid]).catch(() => {}); return; }
@@ -176,6 +189,8 @@ export default class Lichess extends View {
       } catch (e) {
         const g = this.play.game;
         if (g && !st.stopped) { g.error = `Offers unavailable: ${errorText(e)}`; cx.notify(); }
+      } finally {
+        if (auth) fs.unlink(auth).catch(() => {}); // the script removes it too
       }
     });
   }
@@ -395,19 +410,18 @@ export default class Lichess extends View {
     const seek = this.seek = { cell, startedAt: Date.now(), pid: null, cancelled: false };
     P.error = null; P.notice = null; cx.notify();
     cx.spawn(async (cx) => {
+      let authFile = null;
       try {
-        const known = new Set((await this.fetchPlaying()).map((g) => g.gameId));
+        const known =new Set((await this.fetchPlaying()).map((g) => g.gameId));
         if (seek.cancelled) return;
         if (cell.days) {
           await api("/api/board/seek", { token, method: "POST", form });
           P.notice = "Correspondence seek posted. The game appears below once someone accepts it.";
           return;
         }
-        const dir = `${appHome()}/data/lichess`;
-        await fs.mkdir(dir, { recursive: true });
-        const pidFile = `${dir}/seek.pid`, authFile = `${dir}/seek.auth`;
-        await fs.writeFile(authFile, `Authorization: Bearer ${token}\n`);
-        const run = exec("sh", ["-c", SEEK_SCRIPT, "sh", pidFile, authFile, "https://lichess.org/api/board/seek", form],
+        authFile = await writeAuthFile("seek.auth", token);
+        const pidFile = `${appHome()}/data/lichess/seek.pid`;
+        const run =exec("sh", ["-c", SEEK_SCRIPT, "sh", pidFile, authFile, "https://lichess.org/api/board/seek", form],
           { timeout: SEEK_LIMIT_MS });
         for (let i = 0; i < 30 && seek.pid == null; i++) {
           await sleep(cx, 100);
@@ -438,6 +452,7 @@ export default class Lichess extends View {
       } catch (e) {
         if (!seek.cancelled) P.error = errorText(e);
       } finally {
+        if (authFile) fs.unlink(authFile).catch(() => {}); // the script removes it too
         if (this.seek === seek) this.seek = null;
         cx.notify();
       }

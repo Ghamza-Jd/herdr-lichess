@@ -120,8 +120,10 @@ opening; every move as wrapping "1. e4 e5 2. Nf3 …" text, the current one high
   are endless HTTP streams. Seeks run in `curl` under `sh` (its pid in a file; `kill`
   cancels; `-w '\n%{http_code}'` gives the status). The game stream runs in a
   background `curl` writing to `data/lichess/stream-<id>.ndjson`; a background process
-  outlives `exec`. The token goes in a header file (`-H @file`), `chmod 600`, removed
-  after a second.
+  outlives `exec`. The token goes in a header file (`-H @file`): `exec` has no stdin or
+  env, and an argument shows in `ps`. `fs.writeFile` can't set a mode, so make the folder
+  `700` (`umask 077; mkdir -p; chmod 700`) before writing, `chmod 600` the file, and
+  delete it a second after `curl` starts (it reads the file at once), plus in a `finally`.
 - Exports of ongoing games lag a few moves for anti-cheating, and socket FENs are
   placement only. Track `ply`, apply socket moves by UCI when they're next in line, else
   load the placement with hand-tracked castling rights and en passant from the last move.

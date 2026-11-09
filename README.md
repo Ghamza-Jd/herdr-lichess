@@ -57,9 +57,10 @@ board API* (`board:play`) scope. The panel has a button that opens the token pag
   HTTP streams that `fetch` can't read or cancel), `sh` and `kill` to run and stop
   them, and `open` for "Open on Lichess" links.
 - **Files**: while you're seeking or in a game it writes to
-  `~/.config/herdr-app/data/lichess/`: a header file with your token (made private
-  at once and deleted within a second) and the game stream's output (deleted when you
-  leave the game).
+  `~/.config/herdr-app/data/lichess/`, which it makes private (`700`) first: a header
+  file with your token for `curl` (`600`, deleted a second after `curl` reads it) and
+  the game stream's output (deleted when you leave the game). The token goes through a
+  file because a command-line argument would be visible to other users in `ps`.
 - **Your token** is kept in the panel's own storage, nowhere else.
 
 Needs macOS (for `open`) and `curl`.
