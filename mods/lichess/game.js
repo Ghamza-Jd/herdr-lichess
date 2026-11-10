@@ -1,8 +1,7 @@
-// Lichess data -> a live game model, and the socket/HTTP plumbing.
-import { WebSocket } from "websocket";
+// Lichess data -> a live game model, and the HTTP plumbing.
 import { Chess } from "./chess.js";
 
-const LICHESS = "https://lichess.org";
+export const LICHESS = "https://lichess.org";
 
 export async function api(path, { token, method = "GET", form, ndjson = false } = {}) {
   // Lichess answers 403 to some endpoints (game export) without a User-Agent; fetch sends none.
@@ -20,13 +19,6 @@ export async function api(path, { token, method = "GET", form, ndjson = false } 
 }
 
 export const errorText = (e) => String(e?.message ?? e);
-
-// Lichess's site socket: pushes every move (with FEN and clocks) of a watched game,
-// and `tvSelect` when a TV channel's featured game changes. Unofficial but public.
-export function connectWatch(gameId, color) {
-  const sri = Math.random().toString(36).slice(2, 14);
-  return WebSocket.connect(`wss://socket.lichess.org/watch/${gameId}/${color}/v6?sri=${sri}`);
-}
 
 const squares = (uci) => [uci.slice(0, 2), uci.slice(2, 4)];
 const placementOf = (chess) => chess.fen().split(" ")[0];
@@ -66,7 +58,7 @@ function exportClocks(ex) {
 
 /**
  * A game as the panel shows it. `ply` is null when unknown (position loaded from a
- * bare FEN); `castle` is tracked by hand because socket FENs carry placement only.
+ * bare FEN); `castle` is tracked by hand because the playing list's FEN is placement only.
  */
 export function gameFromExport(ex, orientation) {
   const chess = replay(ex.moves);
@@ -79,6 +71,7 @@ export function gameFromExport(ex, orientation) {
     clocks: exportClocks(ex),
     over: endText(ex),
     speed: ex.speed,
+    vsAi: Boolean(ex.players?.white?.aiLevel || ex.players?.black?.aiLevel),
     sel: null, targets: [],
   };
 }
@@ -112,20 +105,21 @@ export function syncToPlaying(game, info) {
   if (info.lastMove) game.last = squares(info.lastMove);
 }
 
-/** Applies a socket `move` message. Echoes of moves we already have are skipped. */
-export function applySocketMove(game, d) {
-  if (game.ply != null && d.ply <= game.ply) return;
-  const [from, to] = squares(d.uci);
-  let applied = false;
-  if (game.ply != null && d.ply === game.ply + 1) {
-    try { game.chess.move({ from, to, promotion: d.uci[4] }); applied = true; } catch { /* fall back to the FEN */ }
-  }
-  updateCastle(game, from, to);
-  if (!applied) loadPlacement(game, d.fen, d.ply % 2 ? "b" : "w", d.uci);
-  game.ply = d.ply;
-  game.last = [from, to];
-  game.sel = null; game.targets = []; game.promo = null;
-  if (d.clock) game.clocks = { white: d.clock.white, black: d.clock.black, at: Date.now() };
+/** A TV game from the feed's `featured` event: full FEN, orientation, players, clocks. */
+export function tvGame(d) {
+  const players = {}, clocks = { at: Date.now() };
+  for (const p of d.players ?? []) { players[p.color] = playerOf(p); clocks[p.color] = p.seconds ?? null; }
+  let chess;
+  try { chess = new Chess(d.fen); } catch { chess = new Chess(); }
+  return { id: d.id, color: d.orientation ?? "white", chess, ply: null, castle: "-", last: null,
+    players, clocks, over: null, sel: null, targets: [] };
+}
+
+/** A TV feed `fen` event: the position after a move, the move, and both clocks (seconds). */
+export function tvMove(game, d) {
+  try { game.chess.load(d.fen); } catch { return; }
+  game.last = d.lm ? squares(d.lm) : null;
+  if (d.wc != null && d.bc != null) game.clocks = { white: d.wc, black: d.bc, at: Date.now() };
 }
 
 /** Rebuilds the position from the full UCI move list (exact castling, en passant, ply). */
@@ -142,15 +136,16 @@ function rebuildFromUci(game, uciMoves) {
  */
 export function applyStreamState(game, st, full) {
   const moves = (st.moves ?? "").split(" ").filter(Boolean);
-  // Only rebuild when the stream itself changed: the socket often delivers a move first,
-  // and an older stream line must not roll the board back.
-  if (full || moves.length !== game.streamCount) {
+  // Only rebuild when the stream itself changed: your own move shows before the stream
+  // echoes it, and an older line must not roll the board back.
+  const changed = full || moves.length !== game.streamCount;
+  if (changed) {
     game.streamCount = moves.length;
     if (full || game.ply !== moves.length) {
-      try { rebuildFromUci(game, moves); } catch { /* keep the socket's view */ }
+      try { rebuildFromUci(game, moves); } catch { /* keep the board as it is */ }
     }
   }
-  if (full && st.wtime != null && game.speed !== "correspondence") {
+  if (changed && st.wtime != null && game.speed !== "correspondence") {
     game.clocks = { white: st.wtime / 1000, black: st.btime / 1000, at: Date.now() };
   }
   if (st.status && st.status !== "started" && st.status !== "created") {
@@ -203,6 +198,18 @@ export function clickSquare(model, sq, mover) {
     model.targets = model.chess.moves({ square: sq, verbose: true }).map((m) => m.to);
   } else { model.sel = null; model.targets = []; }
   return null;
+}
+
+/**
+ * Where `color`'s piece on `sq` could go once it's their turn: the moves it would have if
+ * it were to move now. Used for premoves while the opponent thinks.
+ */
+export function premoveTargets(chess, sq, color) {
+  const [placement, , castle] = chess.fen().split(" ");
+  try {
+    const probe = new Chess(`${placement} ${color} ${castle} - 0 1`, { skipValidation: true });
+    return probe.moves({ square: sq, verbose: true }).map((m) => m.to);
+  } catch { return []; }
 }
 
 export const isPromotion = (chess, from, to) => chess.get(from)?.type === "p" && (to[1] === "8" || to[1] === "1");

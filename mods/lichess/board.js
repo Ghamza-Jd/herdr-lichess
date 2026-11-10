@@ -9,6 +9,7 @@ const LAST = ["#cdd26a", "#aaa23a"];
 const SELECTED = ["#829769", "#646e40"];
 const HINT = ["#9ab8d6", "#7a95b3"];
 const CHECK = ["#f08a76", "#d3624c"];
+const PREMOVE = ["#827b85", "#645974"]; // Lichess's rgba(20,30,85,.5) over the squares
 const FILES = "abcdefgh";
 const BRUSH = { green: "#15781bcc", red: "#882020cc", blue: "#003088cc", yellow: "#e68f00cc" };
 
@@ -47,7 +48,7 @@ function arrowPath(x1, y1, x2, y2, s) {
 /**
  * @param {object} o
  * @param {string} o.id unique prefix for element ids
- * @param {any} o.model { chess, last, sel, targets, shapes?, drawing? }
+ * @param {any} o.model { chess, last, sel, targets, premove?, shapes?, drawing? }
  * @param {"white"|"black"} o.orientation side at the bottom
  * @param {number} o.size board width in px
  * @param {string|null} [o.hint] square to highlight
@@ -57,6 +58,7 @@ function arrowPath(x1, y1, x2, y2, s) {
 export function renderBoard({ id, model, orientation, size, hint = null, onSquare = null, onPromote = null }) {
   const s = Math.floor(size / 8);
   const { chess, last, sel, targets } = model;
+  const pre = model.premove;
   let checkSq = null;
   if (chess.inCheck()) {
     for (const row of chess.board()) for (const p of row) if (p?.type === "k" && p.color === chess.turn()) checkSq = p.square;
@@ -75,7 +77,8 @@ export function renderBoard({ id, model, orientation, size, hint = null, onSquar
     const sq = f + r;
     const isLight = (FILES.indexOf(f) + r) % 2 === 0; // a1 is dark
     const pick = (pair) => pair[isLight ? 0 : 1];
-    const bg = sq === sel ? pick(SELECTED) : sq === checkSq ? pick(CHECK) : sq === hint ? pick(HINT)
+    const bg = sq === sel ? pick(SELECTED) : sq === checkSq ? pick(CHECK)
+      : pre && (sq === pre.from || sq === pre.to) ? pick(PREMOVE) : sq === hint ? pick(HINT)
       : last && (sq === last[0] || sq === last[1]) ? pick(LAST) : isLight ? LIGHT : DARK;
     const piece = chess.get(sq);
     const coord = isLight ? DARK : LIGHT;
